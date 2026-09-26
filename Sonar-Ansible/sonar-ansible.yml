@@ -2,6 +2,8 @@
 - name: Install and configure SonarQube
   hosts: sonarqube
   become: true
+  vars_files:
+    - sonar-secrets.yml
   vars:
     sonar_version: "9.9.4.873"
     sonar_home: "/opt/sonarqube"
@@ -10,11 +12,17 @@
     sonar_port: 9000
     db_name: "sonarqube"
     db_user: "sonarqube"
-    db_password: "StrongPassword123!"
     db_host: "localhost"
     db_port: 5432
 
   tasks:
+    - name: Require a secure PostgreSQL password
+      ansible.builtin.assert:
+        that:
+          - db_password is defined
+          - db_password | length >= 20
+        fail_msg: "Set db_password to a unique secret of at least 20 characters, preferably with Ansible Vault."
+
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: yes
@@ -27,8 +35,15 @@
           - openjdk-17-jre-headless
           - postgresql
           - postgresql-contrib
+          - python3-psycopg2
           - curl
         state: present
+
+    - name: Enable and start PostgreSQL
+      ansible.builtin.service:
+        name: postgresql
+        enabled: true
+        state: started
 
     - name: Create SonarQube group
       ansible.builtin.group:
@@ -58,20 +73,13 @@
         role_attr_flags: "NOSUPERUSER,NOCREATEDB,NOCREATEROLE"
         state: present
       become_user: postgres
+      no_log: true
 
     - name: Download SonarQube package
       ansible.builtin.get_url:
         url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonar_version }}.zip"
         dest: "/tmp/sonarqube-{{ sonar_version }}.zip"
         mode: "0644"
-
-    - name: Ensure target directory exists
-      ansible.builtin.file:
-        path: "{{ sonar_home }}"
-        state: directory
-        owner: "{{ sonar_user }}"
-        group: "{{ sonar_group }}"
-        mode: "0755"
 
     - name: Unarchive SonarQube
       ansible.builtin.unarchive:
@@ -82,18 +90,26 @@
         owner: "{{ sonar_user }}"
         group: "{{ sonar_group }}"
 
-    - name: Set SonarQube home to the extracted directory
-      ansible.builtin.command: mv /opt/sonarqube-{{ sonar_version }} /opt/sonarqube
-      args:
-        creates: "{{ sonar_home }}"
-      when: not ansible_check_mode
-
-    - name: Ensure ownership of SonarQube directory
+    - name: Point SonarQube home to the extracted version
       ansible.builtin.file:
+        src: "/opt/sonarqube-{{ sonar_version }}"
         path: "{{ sonar_home }}"
+        state: link
+        force: true
         owner: "{{ sonar_user }}"
         group: "{{ sonar_group }}"
-        recurse: yes
+
+    - name: Configure kernel settings required by SonarQube
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-sonarqube.conf
+        content: |
+          vm.max_map_count=524288
+          fs.file-max=131072
+        mode: "0644"
+      notify: Reload sysctl settings
+
+    - name: Apply kernel settings before starting SonarQube
+      ansible.builtin.meta: flush_handlers
 
     - name: Configure SonarQube database settings
       ansible.builtin.blockinfile:
@@ -107,6 +123,8 @@
           sonar.search.javaOpts=-Xms512m -Xmx512m
           sonar.web.javaOpts=-Xms512m -Xmx1024m
         state: present
+        mode: "0600"
+      no_log: true
 
     - name: Create SonarQube systemd service
       ansible.builtin.copy:
@@ -124,7 +142,8 @@
           ExecStart={{ sonar_home }}/bin/linux-x86-64/sonar.sh start
           ExecStop={{ sonar_home }}/bin/linux-x86-64/sonar.sh stop
           Restart=always
-          LimitNOFILE=65536
+          LimitNOFILE=131072
+          LimitNPROC=8192
 
           [Install]
           WantedBy=multi-user.target
@@ -139,3 +158,7 @@
         name: sonarqube
         enabled: true
         state: started
+
+  handlers:
+    - name: Reload sysctl settings
+      ansible.builtin.command: sysctl --system

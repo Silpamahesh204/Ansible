@@ -1,67 +1,51 @@
-# SonarQube Configuration with Ansible
+# Install SonarQube on an Azure Ubuntu VM with Ansible
 
-This playbook installs SonarQube on Debian/Ubuntu hosts and configures a local PostgreSQL database. Run it only on a fresh or deliberately prepared host; it changes packages, users, files under `/opt`, and systemd services.
+This playbook is launched from Red Hat Ansible Automation Platform (AAP). AAP runs it in an execution environment and connects over SSH to the remote Ubuntu Azure VM in the `sonarqube` inventory group. SonarQube and PostgreSQL are installed on that VM, not on AAP. The play changes packages, kernel settings, users, files under `/opt`, and systemd services on the VM. Use a fresh or deliberately prepared VM. The playbook uses Java 17 and SonarQube 9.9.4; verify current SonarQube support requirements before changing either version.
 
-## 1. Prepare the control node
+## 1. Prepare the AAP project and execution environment
 
-Install Ansible and the PostgreSQL collection used by the playbook:
+Add this directory to a source-control repository accessible to AAP, including `sonar-ansible.yml` and the encrypted `sonar-secrets.yml` described below. Ensure the execution environment selected for the job template has the `community.postgresql` collection installed. The playbook installs PostgreSQL and `python3-psycopg2` on the Azure VM, where the database modules run.
 
-```sh
-ansible-galaxy collection install community.postgresql
-```
+Create or select an AAP project that syncs this repository. In the AAP inventory, add the Azure VM to a group named `sonarqube`; set its SSH address and remote user as host variables. Attach an SSH Machine credential to the job template, with privilege escalation configured for the VM if sudo requires a password. Attach a Vault credential containing the password used to encrypt `sonar-secrets.yml`.
 
-## 2. Prepare the managed host
+## 2. Prepare the Azure VM
 
-The target must be reachable over SSH with Python available, use an apt-based Linux distribution, and allow the SSH user to become root with `sudo`. The playbook installs Java 17 and PostgreSQL locally. The `community.postgresql` modules also need the PostgreSQL Python adapter available to Ansible on the managed host (for Debian/Ubuntu, install `python3-psycopg2`).
+The target must be an Ubuntu VM reachable over SSH from the AAP execution environment, have Python available, and allow the SSH user to become root with `sudo`. The playbook installs Java 17, PostgreSQL, and the PostgreSQL Python adapter on this VM.
 
-Create an inventory file, for example `inventory.ini`:
+The inventory host should have the equivalent of these variables:
 
 ```ini
 [sonarqube]
-sonar01 ansible_host=192.0.2.10 ansible_user=ubuntu
+sonar01 ansible_host=192.0.2.10 ansible_user=azureuser
 ```
 
-Replace the example address and SSH user with your host's values. Test connectivity and privilege escalation:
+Replace the example address and SSH user with your VM's values. Use its private IP if the AAP execution environment can reach the Azure virtual network; otherwise use an approved public IP. Ensure the Azure NSG and VM firewall allow SSH from the AAP execution environment.
 
-```sh
-ansible sonarqube -i inventory.ini -m ping
-ansible sonarqube -i inventory.ini -b -m command -a 'whoami'
-```
+## 3. Store the database password in Ansible Vault
 
-The second command should report `root`.
-
-## 3. Set deployment variables securely
-
-Review the variables at the top of `sonar-ansible.yml`, especially the SonarQube version, install directory, port, and database settings. Do not use the example database password currently in the playbook. Supply a unique password through Ansible Vault or another secret manager. For example, create an encrypted vars file:
+On a trusted workstation with Ansible installed, create `sonar-secrets.yml` in the same directory as the playbook:
 
 ```sh
 ansible-vault create sonar-secrets.yml
 ```
 
-Put this YAML in the encrypted file, replacing the placeholder with a strong secret:
+Enter this YAML, replacing the placeholder with a unique secret of at least 20 characters:
 
 ```yaml
 db_password: "replace-with-a-unique-secret"
 ```
 
-Pass the file at run time with `-e @sonar-secrets.yml`; Ansible Vault will prompt for its decryption password.
+Commit the encrypted file to the AAP project's source repository. Do not commit the plaintext password or the Vault password. AAP uses the attached Vault credential to decrypt the file when the job runs. The playbook loads this file automatically.
 
-## 4. Check the install-directory task before running
+## 4. Configure and launch an AAP job template
 
-The current playbook creates `/opt/sonarqube` before trying to rename the extracted versioned directory to that path. Its rename task is guarded by `creates: /opt/sonarqube`, so it is skipped after the directory has already been created. Correct this ordering (or install directly into the final directory) before the first run; otherwise later configuration tasks will not find `conf/sonar.properties` under the expected path.
+Create a job template with the synced project, the `sonarqube` inventory, and `sonar-ansible.yml` as the playbook. Attach the SSH Machine credential and Vault credential, and select an execution environment that contains `community.postgresql`. Launch the job; no `-e @sonar-secrets.yml` argument is needed.
 
-## 5. Run the playbook
+For a preview, enable check mode and diff in the job template. Check mode does not prove that downloads, database modules, or service startup will succeed.
 
-After correcting the install-directory ordering, run:
+## 5. Allow access and verify the service
 
-```sh
-ansible-playbook -i inventory.ini Sonar-Ansible/sonar-ansible.yml \
-	-e @sonar-secrets.yml --ask-vault-pass
-```
-
-For an initial review without making changes, add `--check --diff`. Check mode is a preview and does not prove that downloads, database modules, or service startup will succeed.
-
-## 6. Verify the service
+In the Azure network security group, allow inbound TCP port 9000 only from the trusted client or network that needs the web UI. Do not expose the SonarQube port broadly to the internet. Also ensure the VM's host firewall permits that traffic if one is enabled.
 
 On the managed host, check the service and recent logs:
 
@@ -76,7 +60,7 @@ From a machine that can reach the host, check the configured web port (9000 by d
 curl -I http://192.0.2.10:9000
 ```
 
-Allow the port through the host firewall and any cloud network rules only for the clients that need access. Review SonarQube's application logs under `/opt/sonarqube/logs` if the service does not become ready.
+Review SonarQube's application logs under `/opt/sonarqube/logs` if the service does not become ready.
 
 
 Mahesh Annapureddy
