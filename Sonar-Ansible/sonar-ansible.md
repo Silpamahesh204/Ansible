@@ -77,3 +77,6 @@ curl -I http://192.0.2.10:9000
 ```
 
 Allow the port through the host firewall and any cloud network rules only for the clients that need access. Review SonarQube's application logs under `/opt/sonarqube/logs` if the service does not become ready.
+
+
+Mahesh Annapureddy
