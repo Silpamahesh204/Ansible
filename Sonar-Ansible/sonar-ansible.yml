@@ -1,0 +1,141 @@
+---
+- name: Install and configure SonarQube
+  hosts: sonarqube
+  become: true
+  vars:
+    sonar_version: "9.9.4.873"
+    sonar_home: "/opt/sonarqube"
+    sonar_user: "sonarqube"
+    sonar_group: "sonarqube"
+    sonar_port: 9000
+    db_name: "sonarqube"
+    db_user: "sonarqube"
+    db_password: "StrongPassword123!"
+    db_host: "localhost"
+    db_port: 5432
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - unzip
+          - openjdk-17-jre-headless
+          - postgresql
+          - postgresql-contrib
+          - curl
+        state: present
+
+    - name: Create SonarQube group
+      ansible.builtin.group:
+        name: "{{ sonar_group }}"
+        state: present
+
+    - name: Create SonarQube user
+      ansible.builtin.user:
+        name: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Create PostgreSQL database for SonarQube
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+        state: present
+      become_user: postgres
+
+    - name: Create PostgreSQL user for SonarQube
+      community.postgresql.postgresql_user:
+        db: "{{ db_name }}"
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "ALL"
+        role_attr_flags: "NOSUPERUSER,NOCREATEDB,NOCREATEROLE"
+        state: present
+      become_user: postgres
+
+    - name: Download SonarQube package
+      ansible.builtin.get_url:
+        url: "https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-{{ sonar_version }}.zip"
+        dest: "/tmp/sonarqube-{{ sonar_version }}.zip"
+        mode: "0644"
+
+    - name: Ensure target directory exists
+      ansible.builtin.file:
+        path: "{{ sonar_home }}"
+        state: directory
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        mode: "0755"
+
+    - name: Unarchive SonarQube
+      ansible.builtin.unarchive:
+        src: "/tmp/sonarqube-{{ sonar_version }}.zip"
+        dest: "/opt"
+        remote_src: true
+        creates: "/opt/sonarqube-{{ sonar_version }}"
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+
+    - name: Set SonarQube home to the extracted directory
+      ansible.builtin.command: mv /opt/sonarqube-{{ sonar_version }} /opt/sonarqube
+      args:
+        creates: "{{ sonar_home }}"
+      when: not ansible_check_mode
+
+    - name: Ensure ownership of SonarQube directory
+      ansible.builtin.file:
+        path: "{{ sonar_home }}"
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        recurse: yes
+
+    - name: Configure SonarQube database settings
+      ansible.builtin.blockinfile:
+        path: "{{ sonar_home }}/conf/sonar.properties"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+        block: |
+          sonar.jdbc.username={{ db_user }}
+          sonar.jdbc.password={{ db_password }}
+          sonar.jdbc.url=jdbc:postgresql://{{ db_host }}:{{ db_port }}/{{ db_name }}
+          sonar.web.port={{ sonar_port }}
+          sonar.search.javaOpts=-Xms512m -Xmx512m
+          sonar.web.javaOpts=-Xms512m -Xmx1024m
+        state: present
+
+    - name: Create SonarQube systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/sonarqube.service
+        content: |
+          [Unit]
+          Description=SonarQube service
+          After=network.target
+
+          [Service]
+          Type=forking
+          User={{ sonar_user }}
+          Group={{ sonar_group }}
+          PermissionsStartOnly=true
+          ExecStart={{ sonar_home }}/bin/linux-x86-64/sonar.sh start
+          ExecStop={{ sonar_home }}/bin/linux-x86-64/sonar.sh stop
+          Restart=always
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start SonarQube service
+      ansible.builtin.systemd:
+        name: sonarqube
+        enabled: true
+        state: started
