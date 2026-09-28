@@ -1,0 +1,47 @@
+1) Sonarqube:
+Friday, September 25, 2026 - 11:37 AM
+
+Sonarqube.
+- IP Address: https://10.14.15.244
+- Subnet Range: 10.14.15.240/28
+- Local Admin: sq_admin
+- Password: [redacted]
+
+User - sonar / Son@rcloud
+https://t0016vmsq01r01d.fi.com/
+
+PostgreSQL server deployment is now complete.
+- Server Name: t0016-psqlsq01r01-d.postgres.database.azure.com
+- Server Admin login name: psql_admin (password will be provided in another email)
+- Resource on Azure: [long Azure portal link not reliably readable in video]
+- PostgreSQL password: [redacted]
+
+export PGUSER=sonar
+export PGPASSWORD="[redacted]"
+
+SQL-ADMIN-PASSWORD - [redacted]
+
+Login as root - sudo su -
+useradd -m sonar
+passwd sonar
+Changing password for user sonar.
+New password:
+Retype new password:
+passwd: all authentication tokens updated successfully.
+
+grep sonar /etc/passwd
+sonar:x:1004:1004::/home/sonar:/bin/bash
+
+groupadd sonar
+groupadd: group 'sonar' already exists
+
+grep sonar /etc/group
+sonar:x:1004:
+
+usermod -a -G sonar sonar
+grep sonar /etc/group
+sonar:x:1004:sonar
+
+sudo usermod -a -G sonar sonar
+
+Note: Hostnames and the Son@rcloud text are slightly blurry in the recording; verify against the original note before using them.
