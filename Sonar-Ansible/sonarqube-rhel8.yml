@@ -1,0 +1,214 @@
+---
+- name: Install and configure SonarQube on RHEL 8
+  hosts: sonarqube_rhel8
+  become: true
+  vars_files:
+    - sonar-secrets.yml
+  vars:
+    sonar_version: "10.1.0.73491"
+    sonar_archive_url: ""
+    sonar_archive_sha256: ""
+    sonar_archive_path: "/var/tmp/sonarqube-{{ sonar_version }}.zip"
+    sonar_install_root: "/opt/apps"
+    sonar_home: "{{ sonar_install_root }}/sonarqube-{{ sonar_version }}"
+    sonar_user: sonar
+    sonar_group: sonar
+    sonar_port: 9000
+    sonar_data_path: "/var/sonar/data"
+    sonar_temp_path: "/var/sonar/temp"
+    sonar_postgres_host: ""
+    sonar_postgres_port: 5432
+    sonar_db_name: sonar
+    sonar_db_schema: sonar
+    sonar_db_user: sonar
+    sonar_db_sslmode: require
+
+  tasks:
+    - name: Require RHEL 8
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "RedHat"
+          - ansible_distribution_major_version == "8"
+        fail_msg: "This playbook is intended for RHEL 8 hosts only."
+
+    - name: Validate required deployment inputs
+      ansible.builtin.assert:
+        that:
+          - sonar_archive_url | length > 0
+          - sonar_postgres_host | length > 0
+          - sonar_db_password is defined
+          - sonar_db_password | length > 0
+        fail_msg: >-
+          Set sonar_archive_url and sonar_postgres_host, and provide
+          sonar_db_password in the encrypted sonar-secrets.yml file.
+
+    - name: Install Java and archive utilities
+      ansible.builtin.dnf:
+        name:
+          - java-17-openjdk
+          - unzip
+        state: present
+
+    - name: Create SonarQube service group
+      ansible.builtin.group:
+        name: "{{ sonar_group }}"
+        system: true
+        state: present
+
+    - name: Create SonarQube service account
+      ansible.builtin.user:
+        name: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        system: true
+        shell: /sbin/nologin
+        create_home: false
+        state: present
+
+    - name: Create SonarQube directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        mode: "0750"
+      loop:
+        - "{{ sonar_install_root }}"
+        - "{{ sonar_data_path }}"
+        - "{{ sonar_temp_path }}"
+
+    - name: Configure kernel settings for SonarQube
+      ansible.builtin.sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-sonarqube.conf
+        state: present
+        reload: true
+      loop:
+        - name: vm.max_map_count
+          value: "524288"
+        - name: fs.file-max
+          value: "131072"
+
+    - name: Configure PAM limits for SonarQube
+      ansible.builtin.copy:
+        dest: /etc/security/limits.d/99-sonarqube.conf
+        content: |
+          sonar - nofile 131072
+          sonar - nproc 8192
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Wait for PostgreSQL to accept connections
+      ansible.builtin.wait_for:
+        host: "{{ sonar_postgres_host }}"
+        port: "{{ sonar_postgres_port }}"
+        state: started
+        timeout: 60
+
+    - name: Download approved SonarQube archive
+      ansible.builtin.get_url:
+        url: "{{ sonar_archive_url }}"
+        dest: "{{ sonar_archive_path }}"
+        owner: root
+        group: "{{ sonar_group }}"
+        mode: "0640"
+        checksum: "{{ ('sha256:' ~ sonar_archive_sha256) if sonar_archive_sha256 | length > 0 else omit }}"
+        url_username: "{{ sonar_download_username | default(omit) }}"
+        url_password: "{{ sonar_download_password | default(omit) }}"
+        force_basic_auth: true
+      no_log: true
+
+    - name: Extract SonarQube archive
+      ansible.builtin.unarchive:
+        src: "{{ sonar_archive_path }}"
+        dest: "{{ sonar_install_root }}"
+        remote_src: true
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        creates: "{{ sonar_home }}"
+
+    - name: Ensure SonarQube installation ownership
+      ansible.builtin.file:
+        path: "{{ sonar_home }}"
+        state: directory
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        recurse: true
+
+    - name: Remove downloaded archive
+      ansible.builtin.file:
+        path: "{{ sonar_archive_path }}"
+        state: absent
+
+    - name: Configure SonarQube database and paths
+      ansible.builtin.blockinfile:
+        path: "{{ sonar_home }}/conf/sonar.properties"
+        owner: "{{ sonar_user }}"
+        group: "{{ sonar_group }}"
+        mode: "0600"
+        marker: "# {mark} ANSIBLE MANAGED SONARQUBE SETTINGS"
+        block: |
+          sonar.jdbc.username={{ sonar_db_user }}
+          sonar.jdbc.password={{ sonar_db_password }}
+          sonar.jdbc.url=jdbc:postgresql://{{ sonar_postgres_host }}:{{ sonar_postgres_port }}/{{ sonar_db_name }}?currentSchema={{ sonar_db_schema }}&sslmode={{ sonar_db_sslmode }}
+          sonar.path.data={{ sonar_data_path }}
+          sonar.path.temp={{ sonar_temp_path }}
+          sonar.web.port={{ sonar_port }}
+      no_log: true
+
+    - name: Install SonarQube systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/sonarqube.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=SonarQube service
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=forking
+          PIDFile={{ sonar_home }}/bin/linux-x86-64/SonarQube.pid
+          User={{ sonar_user }}
+          Group={{ sonar_group }}
+          ExecStart={{ sonar_home }}/bin/linux-x86-64/sonar.sh start
+          ExecStop={{ sonar_home }}/bin/linux-x86-64/sonar.sh stop
+          LimitNOFILE=131072
+          LimitNPROC=8192
+          Restart=on-failure
+          TimeoutStartSec=300
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload systemd
+
+    - name: Apply systemd unit changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start SonarQube
+      ansible.builtin.systemd:
+        name: sonarqube
+        enabled: true
+        state: started
+
+    - name: Wait for SonarQube health check
+      ansible.builtin.uri:
+        url: "http://localhost:{{ sonar_port }}/api/system/health"
+        method: GET
+        return_content: true
+        url_username: "{{ sonar_api_username | default(omit) }}"
+        url_password: "{{ sonar_api_password | default(omit) }}"
+        status_code: 200
+      register: sonar_health
+      retries: 30
+      delay: 10
+      until: sonar_health.json.health | default('') == 'GREEN'
+      no_log: true
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
