@@ -1,0 +1,97 @@
+---
+- name: Validate ghrunner User and Group Membership
+  hosts: all
+  gather_facts: false
+  become: false
+
+  vars:
+    target_user: "ghrunner"
+
+    required_groups:
+      - "ghrunner"
+      - "wheel"
+      - "apps"
+
+  tasks:
+
+    - name: Validate SSH credentials
+      ansible.builtin.ping:
+      register: ssh_check
+
+    - name: Check whether target user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ target_user }}"
+      register: user_check
+      failed_when: false
+
+    - name: Set user existence status
+      ansible.builtin.set_fact:
+        user_exists: >-
+          {{
+            user_check.ansible_facts.getent_passwd is defined
+            and target_user in user_check.ansible_facts.getent_passwd
+          }}
+
+    - name: Get groups for target user
+      ansible.builtin.command:
+        cmd: "id -nG {{ target_user }}"
+      register: group_check
+      changed_when: false
+      failed_when: false
+      when: user_exists
+
+    - name: Determine group membership
+      ansible.builtin.set_fact:
+        user_groups: "{{ group_check.stdout.split() }}"
+        matched_groups: >-
+          {{
+            required_groups
+            | select('in', group_check.stdout.split())
+            | list
+          }}
+        missing_groups: >-
+          {{
+            required_groups
+            | reject('in', group_check.stdout.split())
+            | list
+          }}
+      when:
+        - user_exists
+        - group_check.rc == 0
+
+    - name: Set failed group status when user does not exist
+      ansible.builtin.set_fact:
+        user_groups: []
+        matched_groups: []
+        missing_groups: "{{ required_groups }}"
+      when: not user_exists
+
+    - name: Display validation result
+      ansible.builtin.debug:
+        msg:
+          - "=============================================="
+          - "       GHRUNNER VALIDATION REPORT"
+          - "=============================================="
+          - "Host:             {{ inventory_hostname }}"
+          - "User:             {{ target_user }}"
+          - "SSH Status:       {{ 'SUCCESS' if ssh_check.ping == 'pong' else 'FAILED' }}"
+          - "User Exists:      {{ 'YES' if user_exists else 'NO' }}"
+          - "Required Groups:  {{ required_groups | join(', ') }}"
+          - "Current Groups:   {{ user_groups | join(', ') if user_groups else 'NONE' }}"
+          - "Matched Groups:   {{ matched_groups | join(', ') if matched_groups else 'NONE' }}"
+          - "Missing Groups:   {{ missing_groups | join(', ') if missing_groups else 'NONE' }}"
+          - "=============================================="
+
+    - name: Validate ghrunner group membership
+      ansible.builtin.assert:
+        that:
+          - ssh_check.ping == "pong"
+          - user_exists
+          - missing_groups | length == 0
+        success_msg: >-
+          PASS - {{ target_user }} exists and belongs to all required groups:
+          {{ required_groups | join(', ') }}
+        fail_msg: >-
+          FAIL - Validation failed for {{ target_user }}.
+          Missing groups: {{ missing_groups | join(', ') }}
