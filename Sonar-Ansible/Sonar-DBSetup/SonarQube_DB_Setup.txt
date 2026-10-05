@@ -1,0 +1,170 @@
+SonarQube PostgreSQL Database Setup
+Transcribed from the visible text in the recording. Repeated blank prompts are omitted and database tables are reformatted for readability. The recording has no audio track. Cropped output is marked where relevant.
+
+postgres=> \list
+List of databases
+Name                | Owner          | Encoding | Locale Provider | Collate    | Ctype
+azure_maintenance   | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+azure_sys           | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+postgres            | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+sonar               | pgadmin        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template0           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template1           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+(6 rows)
+Template access privileges:
+=c/azure_pg_admin
+azure_pg_admin=CTc/azure_pg_admin
+
+postgres=> SELECT datname FROM pg_database WHERE datistemplate = false;
+datname
+azure_maintenance
+postgres
+azure_sys
+sonar
+(4 rows)
+
+postgres=> select session_user, current_user
+select session_user, current_user
+select session_user, current_user;
+ERROR: syntax error at or near "session_user"
+LINE 2: select session_user, current_user
+               ^
+
+postgres=> \l+
+List of databases
+Name                | Owner          | Encoding | Locale Provider | Collate    | Ctype
+azure_maintenance   | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+azure_sys           | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+postgres            | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+sonar               | pgadmin        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template0           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template1           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+(6 rows)
+[Rightmost output is cropped in the recording.]
+
+postgres=> sonar | pgadmin | UTF8 | libc | en_US.utf8 | en_US.utf8 | ...
+postgres-> \c database_name
+Password:
+Previous connection kept
+postgres-> \c sonar
+Password:
+Previous connection kept
+postgres-> DROP DATABASE sonar
+postgres-> DROP DATABASE sonar;
+ERROR: syntax error at or near "sonar"
+LINE 1: sonar | pgadmin | UTF8 | libc ...
+        ^
+postgres=> DROP DATABASE sonar
+DROP DATABASE sonar ;
+ERROR: syntax error at or near "DROP"
+LINE 2: DROP DATABASE sonar ;
+        ^
+postgres-> ^C
+postgres=> DROP DATABASE sonar ;
+DROP DATABASE
+
+postgres=> \l+
+List of databases
+Name                | Owner          | Encoding | Locale Provider | Collate    | Ctype
+azure_maintenance   | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+azure_sys           | azuresu        | UTF8     | libc            | en_US.utf8 | en_US.utf8
+postgres            | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template0           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+template1           | azure_pg_admin | UTF8     | libc            | en_US.utf8 | en_US.utf8
+(5 rows)
+
+postgres=> SELECT datname FROM pg_database WHERE datistemplate = false;
+datname
+azure_maintenance
+postgres
+azure_sys
+(3 rows)
+
+postgres=> create ROLE sonar LOGIN PASSWORD 'Son@rD3';
+CREATE ROLE
+postgres=> ALTER USER sonar WITH ENCRYPTED password 'Son@rD3';
+ALTER ROLE
+postgres=> alter ROLE sonar CREATEDB REPLICATION BYPASSRLS;
+ALTER ROLE
+postgres=> \du
+List of roles
+Role name      | Attributes
+azure_pg_admin | Cannot login
+azuresu        | Superuser, Create role, Create DB, Replication, Bypass RLS
+pgadmin        | Create role, Create DB, Bypass RLS
+replication    | Replication
+sonar          | Create DB, Replication, Bypass RLS
+
+postgres=> \q
+[sonar@t0016vmsq01r01d ~]$ psql -h t0016-pgqlsq02r01-d.postgres.database.azure.com -p 5432 -U sonar -d postgres -W
+Password:
+psql (16.14, server 16.15)
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, compression: off)
+Type "help" for help.
+
+postgres=> SELECT SESSION_USER, CURRENT_USER;
+session_user | current_user
+sonar        | sonar
+(1 row)
+
+postgres=> CREATE DATABASE sonar WITH OWNER sonar ENCODING 'UTF8' LC_COLLATE = 'en_US.UTF-8' LC_CTYPE = 'en_US.UTF-8' TEMPLATE template0;
+CREATE DATABASE
+postgres=> \l
+List of databases
+Name                | Owner          | Encoding | Locale Provider | Collate     | Ctype
+azure_maintenance   | azuresu        | UTF8     | libc            | en_US.utf8  | en_US.utf8
+azure_sys           | azuresu        | UTF8     | libc            | en_US.utf8  | en_US.utf8
+postgres            | azure_pg_admin | UTF8     | libc            | en_US.utf8  | en_US.utf8
+sonar               | sonar          | UTF8     | libc            | en_US.UTF-8 | en_US.UTF-8
+template0           | azure_pg_admin | UTF8     | libc            | en_US.utf8  | en_US.utf8
+template1           | azure_pg_admin | UTF8     | libc            | en_US.utf8  | en_US.utf8
+(6 rows)
+
+postgres=> create SCHEMA sonar;
+ERROR: permission denied for database postgres
+postgres=> \q
+[sonar@t0016vmsq01r01d ~]$ psql -h t0016-pgqlsq02r01-d.postgres.database.azure.com -p 5432 -U sonar -d sonar -W
+Password:
+psql (16.14, server 16.15)
+SSL connection (protocol: TLSv1.3, cipher: TLS_AES_256_GCM_SHA384, compression: off)
+Type "help" for help.
+
+sonar=> create SCHEMA sonar;
+CREATE SCHEMA
+sonar=> \dn
+List of schemas
+Name   | Owner
+public | azure_pg_admin
+sonar  | sonar
+(2 rows)
+
+sonar=> ALTER USER sonar SET search_path to sonar;
+ALTER ROLE
+sonar=> GRANT ALL PRIVILEGES ON DATABASE sonar TO sonar;
+GRANT
+sonar=> GRANT ALL PRIVILEGES ON SCHEMA sonar to sonar;
+GRANT
+sonar=> GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA sonar TO sonar ;
+GRANT
+sonar=> \dn+
+List of schemas
+Name   | Owner          | Access privileges                  | Description
+public | azure_pg_admin | azure_pg_admin=UC/azure_pg_admin   | standard public schema
+       |                | =U/azure_pg_admin                  |
+sonar  | sonar          | sonar=UC/sonar                     |
+(2 rows)
+
+sonar=> REVOKE CONNECT ON DATABASE sonar FROM PUBLIC;
+REVOKE
+sonar=> REVOKE ALL ON SCHEMA sonar FROM PUBLIC;
+REVOKE
+sonar=> GRANT CONNECT ON DATABASE sonar TO sonar;
+GRANT
+sonar=> GRANT USAGE ON SCHEMA sonar TO sonar;
+GRANT
+sonar=> REVOKE ALL ON ALL TABLES IN SCHEMA sonar FROM PUBLIC ;
+REVOKE
+sonar=> GRANT ALL ON ALL TABLES IN SCHEMA sonar TO sonar ;
+GRANT
+sonar=> GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA sonar TO sonar;
+GRANT
