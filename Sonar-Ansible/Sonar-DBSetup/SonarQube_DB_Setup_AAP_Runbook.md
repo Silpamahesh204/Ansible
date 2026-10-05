@@ -24,7 +24,7 @@ Automates the manual `psql` session (Azure Database for PostgreSQL Flexible Serv
 
 ## 2. Findings from the recording (and what changed in the playbook)
 
-1. **Plaintext password** `Son@rD3` is visible in the recording. Treat it as compromised and use a **new** password stored in AAP (never in Git).
+1. **Plaintext password** `*****` is visible in the recording. Treat it as compromised and use a **new** password stored in AAP (never in Git).
 2. **`DROP DATABASE sonar` is destructive.** The playbook skips it unless `sonar_drop_existing_db=true` **and** `sonar_drop_confirm=sonar` are both supplied.
 3. **`REPLICATION` and `BYPASSRLS` are not required by SonarQube.** The default attributes are `LOGIN,CREATEDB` (CREATEDB is only needed because the `sonar` role creates its own DB). To reproduce the recording exactly, set `sonar_role_attrs: "LOGIN,CREATEDB,REPLICATION,BYPASSRLS"`.
 4. **Schema creation must run inside the `sonar` DB**, not `postgres` (the recording hit `permission denied for database postgres`). The playbook handles this.
