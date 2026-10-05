@@ -18,11 +18,18 @@
 #           execution environment.
 # =============================================================================
 - name: SonarQube - PostgreSQL database, role and schema setup
-  hosts: localhost
-  connection: local
+  # Runs on the hosts in the AAP inventory group "sonarqube_servers"
+  # (e.g. the SonarQube VM t0016vmsq01r01d, which can reach the Azure PostgreSQL
+  # server). Use the Job Template "Limit" field to target a single host.
+  hosts: sonarqube_servers
   gather_facts: false
+  # SSH user / key come from the AAP Machine credential.
 
   vars:
+    # ---- Target host prerequisites ------------------------------------------
+    sonar_install_psycopg2: true            # install python3-psycopg2 on the target (needs sudo)
+    sonar_psycopg2_package: python3-psycopg2
+
     # ---- Server connection ---------------------------------------------------
     pg_host: "t0016-pgqlsq02r01-d.postgres.database.azure.com"
     pg_port: 5432
@@ -55,6 +62,19 @@
     sonar_drop_confirm: ""          # must equal sonar_db_name to allow the drop
 
   pre_tasks:
+    - name: Install psycopg2 on the target host (required by community.postgresql)
+      ansible.builtin.dnf:
+        name: "{{ sonar_psycopg2_package }}"
+        state: present
+      become: true
+      when: sonar_install_psycopg2 | bool
+
+    - name: Check TCP connectivity from the target host to PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ pg_host }}"
+        port: "{{ pg_port }}"
+        timeout: 15
+
     - name: Validate required variables
       ansible.builtin.assert:
         that:
