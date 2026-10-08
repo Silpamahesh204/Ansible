@@ -1,0 +1,240 @@
+---
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - pg_host | length > 0
+      - pg_admin_password is defined and pg_admin_password | length > 0
+      - sonar_db_password is defined and sonar_db_password | length >= 8
+      - sonar_db_name is match('^[a-z_][a-z0-9_]*$')
+      - sonar_db_user is match('^[a-z_][a-z0-9_]*$')
+      - sonar_schema is match('^[a-z_][a-z0-9_]*$')
+      - sonar_psycopg2_method in ['dnf', 'pip']
+    fail_msg: >-
+      Missing/invalid variables. Check the AAP credential
+      (pg_admin_password, sonar_db_password), that names are lowercase
+      identifiers, and that sonar_psycopg2_method is dnf or pip.
+    quiet: true
+  no_log: true
+
+- name: Install psycopg2 via dnf (RHEL 10 AppStream)
+  become: true
+  ansible.builtin.dnf:
+    name: "{{ sonar_psycopg2_package }}"
+    state: present
+  when:
+    - sonar_install_psycopg2 | bool
+    - sonar_psycopg2_method == 'dnf'
+
+- name: Install psycopg2 via pip (JFrog PyPI remote)
+  become: true
+  ansible.builtin.pip:
+    name: "{{ sonar_pip_package }}"
+    executable: /usr/bin/pip3
+    extra_args: >-
+      {{ ('--index-url ' ~ sonar_pip_index_url) if sonar_pip_index_url | length > 0 else '' }}
+      --break-system-packages
+  when:
+    - sonar_install_psycopg2 | bool
+    - sonar_psycopg2_method == 'pip'
+
+- name: Check TCP connectivity from the target host to Azure PostgreSQL
+  ansible.builtin.wait_for:
+    host: "{{ pg_host }}"
+    port: "{{ pg_port }}"
+    timeout: 15
+
+# ------------------------------------------------------------------------
+# 1. Admin tasks (connect as pgadmin to the maintenance DB)
+# ------------------------------------------------------------------------
+- name: Admin tasks
+  module_defaults:
+    community.postgresql.postgresql_db:
+      login_host: "{{ pg_host }}"
+      port: "{{ pg_port }}"
+      login_user: "{{ pg_admin_user }}"
+      login_password: "{{ pg_admin_password }}"
+      login_db: "{{ pg_admin_db }}"
+      ssl_mode: "{{ pg_ssl_mode }}"
+    community.postgresql.postgresql_user:
+      login_host: "{{ pg_host }}"
+      port: "{{ pg_port }}"
+      login_user: "{{ pg_admin_user }}"
+      login_password: "{{ pg_admin_password }}"
+      login_db: "{{ pg_admin_db }}"
+      ssl_mode: "{{ pg_ssl_mode }}"
+    community.postgresql.postgresql_query:
+      login_host: "{{ pg_host }}"
+      port: "{{ pg_port }}"
+      login_user: "{{ pg_admin_user }}"
+      login_password: "{{ pg_admin_password }}"
+      login_db: "{{ pg_admin_db }}"
+      ssl_mode: "{{ pg_ssl_mode }}"
+  block:
+    - name: Drop existing database (guarded)
+      community.postgresql.postgresql_db:
+        name: "{{ sonar_db_name }}"
+        state: absent
+        force: true
+      when:
+        - sonar_drop_existing_db | bool
+        - sonar_drop_confirm == sonar_db_name
+
+    - name: Create/update the SonarQube login role
+      community.postgresql.postgresql_user:
+        name: "{{ sonar_db_user }}"
+        password: "{{ sonar_db_password }}"
+        encrypted: true
+        role_attr_flags: "{{ sonar_role_attrs }}"
+        state: present
+      no_log: true
+
+    - name: Check role-level search_path
+      community.postgresql.postgresql_query:
+        query: >-
+          SELECT 1
+          FROM pg_db_role_setting s
+          JOIN pg_roles r ON r.oid = s.setrole
+          WHERE r.rolname = %(r)s
+            AND s.setdatabase = 0
+            AND ('search_path=' || %(s)s) = ANY (s.setconfig)
+        named_args:
+          r: "{{ sonar_db_user }}"
+          s: "{{ sonar_schema }}"
+      register: search_path_check
+      changed_when: false
+
+    - name: Set role search_path to the sonar schema
+      community.postgresql.postgresql_query:
+        query: "ALTER ROLE {{ sonar_db_user }} SET search_path TO {{ sonar_schema }}"
+      when: search_path_check.rowcount | int == 0
+
+# ------------------------------------------------------------------------
+# 2. Database creation (as the sonar role, so sonar owns the database)
+# ------------------------------------------------------------------------
+- name: Create the SonarQube database as the sonar role
+  community.postgresql.postgresql_db:
+    name: "{{ sonar_db_name }}"
+    owner: "{{ sonar_db_user }}"
+    encoding: "{{ sonar_db_encoding }}"
+    lc_collate: "{{ sonar_db_collate }}"
+    lc_ctype: "{{ sonar_db_ctype }}"
+    template: "{{ sonar_db_template }}"
+    state: present
+    login_host: "{{ pg_host }}"
+    port: "{{ pg_port }}"
+    login_user: "{{ sonar_db_user }}"
+    login_password: "{{ sonar_db_password }}"
+    login_db: "{{ pg_admin_db }}"
+    ssl_mode: "{{ pg_ssl_mode }}"
+  no_log: true
+
+# ------------------------------------------------------------------------
+# 3. Schema + privileges (connect as sonar to the sonar database)
+# ------------------------------------------------------------------------
+- name: Schema and privilege tasks
+  module_defaults:
+    community.postgresql.postgresql_schema:
+      login_host: "{{ pg_host }}"
+      port: "{{ pg_port }}"
+      login_user: "{{ sonar_db_user }}"
+      login_password: "{{ sonar_db_password }}"
+      login_db: "{{ sonar_db_name }}"
+      ssl_mode: "{{ pg_ssl_mode }}"
+    community.postgresql.postgresql_privs:
+      login_host: "{{ pg_host }}"
+      port: "{{ pg_port }}"
+      login_user: "{{ sonar_db_user }}"
+      login_password: "{{ sonar_db_password }}"
+      login_db: "{{ sonar_db_name }}"
+      ssl_mode: "{{ pg_ssl_mode }}"
+  block:
+    - name: Create the sonar schema
+      community.postgresql.postgresql_schema:
+        name: "{{ sonar_schema }}"
+        owner: "{{ sonar_db_user }}"
+        state: present
+
+    - name: Revoke CONNECT on the database from PUBLIC
+      community.postgresql.postgresql_privs:
+        type: database
+        objs: "{{ sonar_db_name }}"
+        privs: CONNECT
+        roles: PUBLIC
+        state: absent
+
+    - name: Grant ALL on the database to the sonar role
+      community.postgresql.postgresql_privs:
+        type: database
+        objs: "{{ sonar_db_name }}"
+        privs: ALL
+        roles: "{{ sonar_db_user }}"
+        state: present
+
+    - name: Keep CONNECT for admin roles (pgadmin is not a superuser on Azure)
+      community.postgresql.postgresql_privs:
+        type: database
+        objs: "{{ sonar_db_name }}"
+        privs: CONNECT
+        roles: "{{ item }}"
+        state: present
+      loop: "{{ sonar_db_connect_roles }}"
+
+    - name: Revoke ALL on the schema from PUBLIC
+      community.postgresql.postgresql_privs:
+        type: schema
+        objs: "{{ sonar_schema }}"
+        privs: ALL
+        roles: PUBLIC
+        state: absent
+
+    - name: Grant ALL on the schema to the sonar role
+      community.postgresql.postgresql_privs:
+        type: schema
+        objs: "{{ sonar_schema }}"
+        privs: ALL
+        roles: "{{ sonar_db_user }}"
+        state: present
+
+# ------------------------------------------------------------------------
+# 4. Verification (fresh connection as sonar, so role search_path applies)
+# ------------------------------------------------------------------------
+- name: Verify setup as the sonar role
+  community.postgresql.postgresql_query:
+    query: >-
+      SELECT current_user AS db_user,
+             current_database() AS db_name,
+             current_schema() AS db_schema,
+             pg_encoding_to_char(d.encoding) AS encoding,
+             d.datcollate AS collate,
+             d.datctype AS ctype
+      FROM pg_database d
+      WHERE d.datname = current_database()
+    login_host: "{{ pg_host }}"
+    port: "{{ pg_port }}"
+    login_user: "{{ sonar_db_user }}"
+    login_password: "{{ sonar_db_password }}"
+    login_db: "{{ sonar_db_name }}"
+    ssl_mode: "{{ pg_ssl_mode }}"
+  register: verify
+  changed_when: false
+  no_log: true
+
+- name: Assert expected state
+  ansible.builtin.assert:
+    that:
+      - verify.query_result[0].db_user == sonar_db_user
+      - verify.query_result[0].db_name == sonar_db_name
+      - verify.query_result[0].db_schema == sonar_schema
+      - verify.query_result[0].encoding == sonar_db_encoding
+    success_msg: >-
+      OK: {{ sonar_db_user }}@{{ sonar_db_name }}, schema {{ sonar_schema }},
+      encoding {{ verify.query_result[0].encoding }},
+      collate {{ verify.query_result[0].collate }}
+    quiet: false
+
+- name: Show SonarQube JDBC settings to use in sonar.properties
+  ansible.builtin.debug:
+    msg:
+      - "sonar.jdbc.username={{ sonar_db_user }}"
+      - "sonar.jdbc.password=<your sonar_db_password>"
+      - "sonar.jdbc.url=jdbc:postgresql://{{ pg_host }}:{{ pg_port }}/{{ sonar_db_name }}?sslmode=require&currentSchema={{ sonar_schema }}"

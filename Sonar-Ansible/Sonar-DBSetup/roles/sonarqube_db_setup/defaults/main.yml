@@ -1,0 +1,33 @@
+---
+# ---- Target host prerequisites ----------------------------------------------
+ansible_python_interpreter: /usr/bin/python3
+sonar_install_psycopg2: true
+sonar_psycopg2_method: dnf
+sonar_psycopg2_package: python3-psycopg2
+sonar_pip_package: psycopg2-binary
+sonar_pip_index_url: ""
+
+# ---- Server connection -----------------------------------------------------
+pg_host: "t0016-pgqlsq02r01-d.postgres.database.azure.com"
+pg_port: 5432
+pg_ssl_mode: require
+pg_admin_user: pgadmin
+pg_admin_db: postgres
+# pg_admin_password: injected from AAP credential
+
+# ---- SonarQube objects ------------------------------------------------------
+sonar_db_name: sonar
+sonar_db_user: sonar
+# sonar_db_password: injected from AAP credential
+sonar_schema: sonar
+sonar_db_encoding: UTF8
+sonar_db_collate: en_US.UTF-8
+sonar_db_ctype: en_US.UTF-8
+sonar_db_template: template0
+sonar_role_attrs: "LOGIN,CREATEDB,REPLICATION,BYPASSRLS"
+sonar_db_connect_roles:
+  - "{{ pg_admin_user }}"
+
+# ---- Destructive option (OFF by default) ----------------------------------
+sonar_drop_existing_db: false
+sonar_drop_confirm: ""

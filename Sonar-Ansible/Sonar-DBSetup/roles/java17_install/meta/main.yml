@@ -1,0 +1,20 @@
+---
+galaxy_info:
+  role_name: java17_install
+  author: Ansible user
+  description: Installs OpenJDK 17 on Red Hat 8+
+  license: MIT
+  min_ansible_version: '2.14'
+  platforms:
+    - name: EL
+      versions:
+        - '8'
+        - '9'
+        - '10'
+  galaxy_tags:
+    - java
+    - redhat
+    - openjdk
+    - sonarqube
+
+dependencies: []

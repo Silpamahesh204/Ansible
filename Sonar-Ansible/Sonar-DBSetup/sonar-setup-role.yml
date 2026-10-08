@@ -1,0 +1,12 @@
+---
+- name: SonarQube database setup via role
+  hosts: sonarqube_servers
+  gather_facts: false
+  become: true
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  roles:
+    - role: ./roles/java17_install
+    - role: ./roles/sonarqube_db_setup

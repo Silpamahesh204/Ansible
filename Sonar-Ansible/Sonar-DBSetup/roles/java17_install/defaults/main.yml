@@ -1,0 +1,6 @@
+---
+java17_package_name: java-17-openjdk
+java17_state: present
+java17_update_cache: true
+java17_validate_version: true
+java17_version_command: java -version

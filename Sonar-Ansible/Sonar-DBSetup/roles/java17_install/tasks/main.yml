@@ -1,0 +1,28 @@
+---
+- name: Ensure this is a supported Red Hat family host
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'RedHat'
+      - ansible_distribution_major_version | int >= 8
+    fail_msg: >-
+      This Java 17 role is intended for RHEL/CentOS/Oracle Linux 8+ hosts.
+    quiet: true
+
+- name: Install OpenJDK 17 from the OS package manager
+  become: true
+  ansible.builtin.yum:
+    name: "{{ java17_package_name }}"
+    state: "{{ java17_state }}"
+    update_cache: "{{ java17_update_cache }}"
+
+- name: Verify Java 17 is available on PATH
+  ansible.builtin.command: "{{ java17_version_command }}"
+  register: java17_version_check
+  changed_when: false
+  failed_when: java17_version_check.rc != 0
+  when: java17_validate_version | bool
+
+- name: Show the Java version output
+  ansible.builtin.debug:
+    msg: "{{ java17_version_check.stderr | default(java17_version_check.stdout) }}"
+  when: java17_validate_version | bool

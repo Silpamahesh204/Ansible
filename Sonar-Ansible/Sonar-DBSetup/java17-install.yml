@@ -1,0 +1,8 @@
+---
+- name: Install Java 17 on Red Hat hosts
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: ./roles/java17_install
