@@ -1,128 +1,70 @@
 ---
 # ============================================================================
-# SonarQube - PostgreSQL (Azure Database for PostgreSQL Flexible Server) setup
+# SonarQube - Azure Database for PostgreSQL Flexible Server setup (RHEL 10)
 #
-# Automates the manual psql steps from the recording:
-#   1. (optional) drop the old "sonar" database
-#   2. create the "sonar" login role
-#   3. create the "sonar" database (owned by sonar, UTF8, en_US.UTF-8)
-#   4. create the "sonar" schema inside it
-#   5. set the role's search_path to the sonar schema
-#   6. lock down privileges (revoke PUBLIC, grant sonar)
-#   7. verify by connecting as sonar
+#   1. validate variables (fail fast)
+#   2. install psycopg2 on the target host
+#   3. check connectivity to the Azure PostgreSQL server
+#   4. (optional, guarded) drop the old "sonar" database
+#   5. create the "sonar" login role + set its search_path
+#   6. create the "sonar" database (owned by sonar, UTF8, en_US.UTF-8)
+#   7. create the "sonar" schema and lock down privileges
+#   8. verify by connecting as sonar
 #
 # Secrets (never hard-code): pg_admin_password, sonar_db_password
-#   -> injected by an AAP custom credential (see README.md)
+#   -> injected by an AAP custom credential
 #
-# Requires: collection community.postgresql + python psycopg2 in the
-#           execution environment.
+# Requires: collection community.postgresql + python psycopg2 on the target.
+# No local PostgreSQL is installed: the database lives on Azure.
 # ============================================================================
-- name: SonarQube - PostgreSQL database, role and schema setup
-  # Runs on the hosts in the AAP inventory group "sonarqube_servers"
-  # (e.g. the SonarQube VM t0016vmsq01r01d, which can reach the Azure PostgreSQL
-  # server). Use the Job Template "Limit" field to target a single host.
+- name: SonarQube - Azure PostgreSQL database, role and schema setup
+  # Hosts in the AAP inventory group "sonarqube_servers" (the SonarQube VM,
+  # which must be able to reach the Azure PostgreSQL server on 5432).
+  # Use the Job Template "Limit" field to target a single host.
   hosts: sonarqube_servers
   gather_facts: false
-  # SSH user / key come from the AAP Machine credential.
 
   vars:
     # ---- Target host prerequisites ------------------------------------------
-    sonar_install_psycopg2: true           # install python3-psycopg2 on the target (needs sudo)
+    ansible_python_interpreter: /usr/bin/python3
+    sonar_install_psycopg2: true
+    sonar_psycopg2_method: dnf             # dnf (AppStream) or pip (JFrog PyPI remote)
     sonar_psycopg2_package: python3-psycopg2
-    sonar_setup_local_postgresql: true     # opt in when PostgreSQL should run on this host
-    sonar_allow_unsigned_pgdg_repo_rpm: true # only enable after verifying the RPM source
+    # Only used when sonar_psycopg2_method == pip
+    sonar_pip_package: psycopg2-binary
+    sonar_pip_index_url: ""                # e.g. https://fiprod.jfrog.io/artifactory/api/pypi/<pypi-remote>/simple
 
     # ---- Server connection -------------------------------------------------
     pg_host: "t0016-pgqlsq02r01-d.postgres.database.azure.com"
     pg_port: 5432
-    pg_ssl_mode: require                  # Azure enforces TLS; use verify-full + ca_cert for strict
+    pg_ssl_mode: require                   # Azure enforces TLS; use verify-full + ca_cert for strict
     pg_admin_user: pgadmin
     pg_admin_db: postgres
-    # pg_admin_password:                  # injected from AAP credential
+    # pg_admin_password:                   # injected from AAP credential
 
     # ---- SonarQube objects -------------------------------------------------
     sonar_db_name: sonar
     sonar_db_user: sonar
-    # sonar_db_password:                  # injected from AAP credential
+    # sonar_db_password:                   # injected from AAP credential
     sonar_schema: sonar
     sonar_db_encoding: UTF8
     sonar_db_collate: en_US.UTF-8
     sonar_db_ctype: en_US.UTF-8
     sonar_db_template: template0
 
-    # Recording used: LOGIN,CREATEDB,REPLICATION,BYPASSRLS
-    # SonarQube only needs LOGIN (+ CREATEDB here because sonar creates its own DB).
+    # SonarQube only needs LOGIN (+ CREATEDB because sonar creates its own DB).
     sonar_role_attrs: "LOGIN,CREATEDB,NOSUPERUSER,NOCREATEROLE,NOREPLICATION,NOBYPASSRLS"
 
-    # Admin roles that must keep CONNECT after PUBLIC's CONNECT is revoked
+    # Roles that must keep CONNECT after PUBLIC's CONNECT is revoked
     # (pgadmin is NOT a superuser on Azure, so it would otherwise be locked out).
     sonar_db_connect_roles:
       - "{{ pg_admin_user }}"
 
     # ---- Destructive option (OFF by default) --------------------------------
     sonar_drop_existing_db: false
-    sonar_drop_confirm: ""                # must equal sonar_db_name to allow the drop
+    sonar_drop_confirm: ""                 # must equal sonar_db_name to allow the drop
 
   pre_tasks:
-    - name: Download PostgreSQL PGDG repository RPM from JFrog
-      ansible.builtin.get_url:
-        url: "https://fiprod.jfrog.io/artifactory/iocloud-installables/rpm/postgresql/pgdg-redhat-repo-EL-10-aarch64.noarch.rpm"
-        dest: /tmp/pgdg-redhat-repo-EL-10-aarch64.noarch.rpm
-        mode: "0644"
-        username: "{{ lookup('env', 'USERNAME') }}"
-        password: "{{ lookup('env', 'PASSWORD') }}"
-      no_log: true
-      when: sonar_setup_local_postgresql | bool
-
-    - name: Install PostgreSQL PGDG repository configuration
-      become: true
-      become_user: root
-      ansible.builtin.dnf:
-        name: /tmp/pgdg-redhat-repo-EL-10-aarch64.noarch.rpm
-        state: present
-        disablerepo: "*"
-        disable_gpg_check: "{{ sonar_allow_unsigned_pgdg_repo_rpm | bool }}"
-      when: sonar_setup_local_postgresql | bool
-
-    - name: Install PostgreSQL 18 server package
-      become: true
-      become_user: root
-      ansible.builtin.dnf:
-        name: postgresql18-server
-        state: present
-      when: sonar_setup_local_postgresql | bool
-
-    - name: Initialize and start local PostgreSQL 18 (optional)
-      become: true
-      become_user: root
-      when: sonar_setup_local_postgresql | bool
-      block:
-        - name: Initialize PostgreSQL 18 database
-          become: true
-          become_user: root
-          become_method: sudo
-          ansible.builtin.command:
-            cmd: /usr/pgsql-18/bin/postgresql-18-setup initdb
-            creates: /var/lib/pgsql/18/data/PG_VERSION
-
-        - name: Enable and start PostgreSQL 18
-          ansible.builtin.systemd:
-            name: postgresql-18
-            enabled: true
-            state: started
-    - name: Install psycopg2 on the target host (required by community.postgresql)
-      ansible.builtin.dnf:
-        name: "{{ sonar_psycopg2_package }}"
-        state: present
-      become: true
-      when: sonar_install_psycopg2 | bool
-
-    - name: Check TCP connectivity from the target host to PostgreSQL
-      ansible.builtin.wait_for:
-        host: "{{ pg_host }}"
-        port: "{{ pg_port }}"
-        timeout: 15
-
     - name: Validate required variables
       ansible.builtin.assert:
         that:
@@ -132,12 +74,40 @@
           - sonar_db_name is match('^[a-z_][a-z0-9_]*$')
           - sonar_db_user is match('^[a-z_][a-z0-9_]*$')
           - sonar_schema is match('^[a-z_][a-z0-9_]*$')
+          - sonar_psycopg2_method in ['dnf', 'pip']
         fail_msg: >-
           Missing/invalid variables. Check the AAP credential
-          (pg_admin_password, sonar_db_password) and that names are lowercase
-          identifiers.
+          (pg_admin_password, sonar_db_password), that names are lowercase
+          identifiers, and that sonar_psycopg2_method is dnf or pip.
         quiet: true
       no_log: true
+
+    - name: Install psycopg2 via dnf (RHEL 10 AppStream)
+      become: true
+      ansible.builtin.dnf:
+        name: "{{ sonar_psycopg2_package }}"
+        state: present
+      when:
+        - sonar_install_psycopg2 | bool
+        - sonar_psycopg2_method == 'dnf'
+
+    - name: Install psycopg2 via pip (JFrog PyPI remote)
+      become: true
+      ansible.builtin.pip:
+        name: "{{ sonar_pip_package }}"
+        executable: /usr/bin/pip3
+        extra_args: >-
+          {{ ('--index-url ' ~ sonar_pip_index_url) if sonar_pip_index_url | length > 0 else '' }}
+          --break-system-packages
+      when:
+        - sonar_install_psycopg2 | bool
+        - sonar_psycopg2_method == 'pip'
+
+    - name: Check TCP connectivity from the target host to Azure PostgreSQL
+      ansible.builtin.wait_for:
+        host: "{{ pg_host }}"
+        port: "{{ pg_port }}"
+        timeout: 15
 
   tasks:
     # ------------------------------------------------------------------------
@@ -206,7 +176,7 @@
           when: search_path_check.rowcount | int == 0
 
     # ------------------------------------------------------------------------
-    # 2. Database creation (as the sonar role, like the recording)
+    # 2. Database creation (as the sonar role, so sonar owns the database)
     # ------------------------------------------------------------------------
     - name: Create the SonarQube database as the sonar role
       community.postgresql.postgresql_db:
@@ -238,13 +208,6 @@
           login_db: "{{ sonar_db_name }}"
           ssl_mode: "{{ pg_ssl_mode }}"
         community.postgresql.postgresql_privs:
-          login_host: "{{ pg_host }}"
-          port: "{{ pg_port }}"
-          login_user: "{{ sonar_db_user }}"
-          login_password: "{{ sonar_db_password }}"
-          login_db: "{{ sonar_db_name }}"
-          ssl_mode: "{{ pg_ssl_mode }}"
-        community.postgresql.postgresql_query:
           login_host: "{{ pg_host }}"
           port: "{{ pg_port }}"
           login_user: "{{ sonar_db_user }}"
@@ -295,24 +258,6 @@
           community.postgresql.postgresql_privs:
             type: schema
             objs: "{{ sonar_schema }}"
-            privs: ALL
-            roles: "{{ sonar_db_user }}"
-            state: present
-
-        - name: Revoke ALL on existing tables in the schema from PUBLIC
-          community.postgresql.postgresql_privs:
-            type: table
-            objs: ALL_IN_SCHEMA
-            schema: "{{ sonar_schema }}"
-            privs: ALL
-            roles: PUBLIC
-            state: absent
-
-        - name: Grant ALL on existing tables in the schema to the sonar role
-          community.postgresql.postgresql_privs:
-            type: table
-            objs: ALL_IN_SCHEMA
-            schema: "{{ sonar_schema }}"
             privs: ALL
             roles: "{{ sonar_db_user }}"
             state: present
