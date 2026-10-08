@@ -52,8 +52,8 @@
     sonar_db_ctype: en_US.UTF-8
     sonar_db_template: template0
 
-    # SonarQube only needs LOGIN (+ CREATEDB because sonar creates its own DB).
-    sonar_role_attrs: "LOGIN,CREATEDB,NOSUPERUSER,NOCREATEROLE,NOREPLICATION,NOBYPASSRLS"
+    # Match the recording: LOGIN, CREATEDB, REPLICATION, BYPASSRLS.
+    sonar_role_attrs: "LOGIN,CREATEDB,REPLICATION,BYPASSRLS"
 
     # Roles that must keep CONNECT after PUBLIC's CONNECT is revoked
     # (pgadmin is NOT a superuser on Azure, so it would otherwise be locked out).
